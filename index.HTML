@@ -1,0 +1,433 @@
+<!DOCTYPE html>
+<html lang="en" class="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AddisTrade Terminal | ETSE Simulation</title>
+    
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+        tailwind.config = {
+            darkMode: 'class',
+            theme: {
+                extend: {
+                    colors: {
+                        terminal: {
+                            bg: '#0a0a0a',
+                            panel: '#111111',
+                            border: '#333333',
+                            text: '#e2e8f0',
+                            green: '#00ff00', // Bloomberg Neon Green
+                            red: '#ff3333',   // Bloomberg Neon Red
+                            blue: '#00aaff'
+                        }
+                    },
+                    fontFamily: {
+                        mono: ['ui-monospace', 'SFMono-Regular', 'Menlo', 'Monaco', 'Consolas', 'Liberation Mono', 'Courier New', 'monospace']
+                    }
+                }
+            }
+        }
+    </script>
+    
+    <script crossorigin src="https://unpkg.com/react@18/umd/react.development.js"></script>
+    <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    
+    <script src="https://unpkg.com/lucide@latest"></script>
+
+    <style>
+        body { background-color: #0a0a0a; color: #e2e8f0; font-family: 'Courier New', monospace; }
+        /* Terminal Scrollbar styling */
+        ::-webkit-scrollbar { width: 8px; height: 8px; }
+        ::-webkit-scrollbar-track { background: #111; border-left: 1px solid #333; }
+        ::-webkit-scrollbar-thumb { background: #444; }
+        ::-webkit-scrollbar-thumb:hover { background: #555; }
+        
+        .blink-green { animation: blink-green 0.5s ease-in-out; }
+        .blink-red { animation: blink-red 0.5s ease-in-out; }
+        @keyframes blink-green { 0%, 100% { background-color: transparent; } 50% { background-color: rgba(0, 255, 0, 0.2); } }
+        @keyframes blink-red { 0%, 100% { background-color: transparent; } 50% { background-color: rgba(255, 51, 51, 0.2); } }
+
+        /* Ticker Animation */
+        .ticker-wrap { width: 100%; overflow: hidden; white-space: nowrap; box-sizing: border-box; }
+        .ticker { display: inline-block; padding-left: 100%; animation: ticker 60s linear infinite; }
+        @keyframes ticker { 0% { transform: translate3d(0, 0, 0); } 100% { transform: translate3d(-100%, 0, 0); } }
+    </style>
+</head>
+<body class="h-screen flex flex-col overflow-hidden">
+    <div id="root" class="h-full flex flex-col"></div>
+
+    <script type="text/babel">
+        const { useState, useEffect, useMemo, useRef } = React;
+
+        // --- Configuration & Initial Data ---
+        const INITIAL_TICKERS = [
+            { symbol: 'CBE', name: 'Comm. Bank Ethiopia', price: 250.00, vol: 15000 },
+            { symbol: 'ETHIO-TEL', name: 'Ethio Telecom', price: 185.50, vol: 45000 },
+            { symbol: 'AWASH', name: 'Awash Bank', price: 420.00, vol: 8000 },
+            { symbol: 'EAL', name: 'Ethiopian Airlines', price: 310.75, vol: 22000 },
+            { symbol: 'DASCHEN', name: 'Dashen Bank', price: 295.25, vol: 9500 },
+            { symbol: 'ETH-CEMENT', name: 'Ethio Cement', price: 88.00, vol: 30000 },
+        ];
+        const HISTORY_LENGTH = 60; // Keep last 60 ticks for the chart
+
+        // --- Helpers ---
+        const formatCurrency = (num) => new Intl.NumberFormat('en-ET', { style: 'currency', currency: 'ETB', minimumFractionDigits: 2 }).format(num);
+        const formatNumber = (num) => new Intl.NumberFormat('en-US').format(num);
+        const Icon = ({ name, size = 16, className = "" }) => {
+            useEffect(() => { lucide.createIcons(); });
+            return <i data-lucide={name} width={size} height={size} className={className}></i>;
+        };
+
+        // --- Components ---
+
+        // 1. Top Scrolling Ticker
+        const MarketTicker = ({ stocks }) => (
+            <div className="bg-terminal-panel border-b border-terminal-border p-1 text-sm font-mono z-10 relative flex items-center">
+                <div className="bg-terminal-green text-black px-2 font-bold mr-2 text-xs tracking-widest uppercase">LIVE ETSE</div>
+                <div className="ticker-wrap mask-gradient-x">
+                    <div className="ticker">
+                        {stocks.map(s => (
+                            <span key={s.symbol} className="inline-flex items-center mx-4">
+                                <span className="font-bold text-terminal-blue">{s.symbol}</span>
+                                <span className={`ml-2 ${s.change >= 0 ? 'text-terminal-green' : 'text-terminal-red'}`}>
+                                    {s.price.toFixed(2)} {s.change >= 0 ? '▲' : '▼'} ({Math.abs(s.changePercent).toFixed(2)}%)
+                                </span>
+                            </span>
+                        ))}
+                    </div>
+                </div>
+            </div>
+        );
+
+        // 2. SVG Dynamic Chart
+        const TerminalChart = ({ data, color }) => {
+            if (data.length < 2) return <div className="h-full flex items-center justify-center text-xs text-gray-600">INITIALIZING FEED...</div>;
+            
+            const prices = data.map(d => d.price);
+            const min = Math.min(...prices) * 0.999;
+            const max = Math.max(...prices) * 1.001;
+            const height = 200; const width = 600;
+            
+            // Map prices to SVG coordinates
+            const points = data.map((d, i) => {
+                const x = (i / (HISTORY_LENGTH - 1)) * width;
+                const normalizedY = (d.price - min) / (max - min);
+                const y = height - (normalizedY * height);
+                return `${x},${y}`;
+            }).join(' ');
+
+            const strokeColor = color === 'green' ? '#00ff00' : '#ff3333';
+
+            return (
+                <div className="h-[200px] w-full border-t border-terminal-border bg-terminal-bg relative overflow-hidden">
+                    <div className="absolute top-1 left-1 text-xs text-gray-500">{max.toFixed(2)}</div>
+                    <div className="absolute bottom-1 left-1 text-xs text-gray-500">{min.toFixed(2)}</div>
+                    <svg viewBox={`0 0 ${width} ${height}`} className="w-full h-full max-h-[200px]" preserveAspectRatio="none">
+                         <defs>
+                            <linearGradient id={`gradient-${color}`} x1="0" y1="0" x2="0" y2="1">
+                                <stop offset="0%" stopColor={strokeColor} stopOpacity="0.2"/>
+                                <stop offset="100%" stopColor={strokeColor} stopOpacity="0"/>
+                            </linearGradient>
+                        </defs>
+                        <polygon points={`0,${height} ${points} ${width},${height}`} fill={`url(#gradient-${color})`} />
+                        <polyline points={points} fill="none" stroke={strokeColor} strokeWidth="1.5" vectorEffect="non-scaling-stroke" />
+                    </svg>
+                </div>
+            );
+        };
+
+        // 3. Order Book Simulation
+        const OrderBook = ({ currentPrice }) => {
+            // Simulate order book depth based on current price
+            const generateDepth = (basePrice, type) => {
+                return Array.from({ length: 8 }, (_, i) => {
+                    const spread = basePrice * (0.0005 * (i + 1));
+                    const price = type === 'ask' ? basePrice + spread : basePrice - spread;
+                    const size = Math.floor(Math.random() * 500) + 100;
+                    return { price, size, total: size * price };
+                });
+            };
+            
+            // Regenerate on every price change to simulate activity
+            const asks = useMemo(() => generateDepth(currentPrice, 'ask').reverse(), [currentPrice]);
+            const bids = useMemo(() => generateDepth(currentPrice, 'buy'), [currentPrice]);
+
+            const Row = ({ item, type }) => (
+                 <div className={`grid grid-cols-3 text-xs py-0.5 ${type === 'ask' ? 'text-terminal-red' : 'text-terminal-green'} hover:bg-terminal-border cursor-crosshair`}>
+                    <span className="text-right">{item.price.toFixed(2)}</span>
+                    <span className="text-right text-gray-400">{item.size}</span>
+                    <span className="text-right text-terminal-text">{formatNumber(item.total.toFixed(0))}</span>
+                </div>
+            );
+
+            return (
+                <div className="flex flex-col h-full">
+                     <div className="grid grid-cols-3 text-xs text-gray-500 pb-1 border-b border-terminal-border font-bold">
+                        <span className="text-right">Price</span><span className="text-right">Size</span><span className="text-right">Total (ETB)</span>
+                    </div>
+                    <div className="flex-1 overflow-hidden flex flex-col">
+                        <div className="flex-1 flex flex-col justify-end">{asks.map((a, i) => <Row key={'ask'+i} item={a} type="ask" />)}</div>
+                        <div className="text-center font-bold text-lg py-1 border-y border-terminal-border bg-terminal-panel text-terminal-text">{currentPrice.toFixed(2)}</div>
+                        <div className="flex-1">{bids.map((b, i) => <Row key={'bid'+i} item={b} type="buy" />)}</div>
+                    </div>
+                </div>
+            );
+        };
+
+        // Main Application
+        function App() {
+            // --- Master State ---
+            const [stocks, setStocks] = useState(INITIAL_TICKERS.map(s => ({...s, change: 0, changePercent: 0, prevPrice: s.price })));
+            const [selectedSymbol, setSelectedSymbol] = useState('CBE');
+            // History maps symbol to array of {time, price}
+            const [priceHistory, setPriceHistory] = useState(INITIAL_TICKERS.reduce((acc, curr) => ({...acc, [curr.symbol]: []}), {}));
+            
+            // User Wallet State
+            const [wallet, setWallet] = useState({
+                cash: 100000.00,
+                portfolio: {} // { 'CBE': { quantity: 10, avgCost: 245.50 } }
+            });
+            const [tradeQty, setTradeQty] = useState(10);
+
+            const selectedStock = stocks.find(s => s.symbol === selectedSymbol);
+            const stockHistory = priceHistory[selectedSymbol];
+            const trendColor = (selectedStock.change >= 0 ? 'green' : 'red');
+
+            // --- Simulation Engine (The Heartbeat) ---
+            useEffect(() => {
+                const interval = setInterval(() => {
+                    const now = new Date();
+                    
+                    setStocks(prevStocks => {
+                        const updatedStocks = prevStocks.map(stock => {
+                            // Simulate price movement: -0.5% to +0.5% random fluctuating change
+                            const volatility = 0.005;
+                            const movement = 1 + (Math.random() * volatility * 2 - volatility);
+                            const newPrice = Math.max(0.01, stock.price * movement); // Ensure not zero
+                            const change = newPrice - stock.prevPrice;
+                            
+                            // Update History in memory
+                            setPriceHistory(prevHist => {
+                                const newHist = [...prevHist[stock.symbol], { time: now, price: newPrice }];
+                                // Keep only last N data points to prevent memory bloat
+                                if (newHist.length > HISTORY_LENGTH) newHist.shift(); 
+                                return { ...prevHist, [stock.symbol]: newHist };
+                            });
+
+                            return {
+                                ...stock,
+                                price: newPrice,
+                                change: change,
+                                changePercent: (change / stock.prevPrice) * 100,
+                                // Don't update prevPrice yet, keep it fixed to start of day for daily change calc.
+                                // For this sim, we are calculating change based on initial load price.
+                                prevPrice: stock.prevPrice 
+                            };
+                        });
+                        return updatedStocks;
+                    });
+
+                }, 1000); // Tick every second
+
+                return () => clearInterval(interval);
+            }, []);
+
+
+            // --- Trading Logic ---
+            const handleTrade = (type) => {
+                const price = selectedStock.price;
+                const totalCost = price * tradeQty;
+
+                if (type === 'BUY') {
+                    if (wallet.cash < totalCost) { alert("INSUFFICIENT FUNDS"); return; }
+                    
+                    setWallet(prev => {
+                        const currentHolding = prev.portfolio[selectedSymbol] || { quantity: 0, avgCost: 0 };
+                        const new Quantity = currentHolding.quantity + tradeQty;
+                        // Calculate new weighted average cost
+                        const newAvgCost = ((currentHolding.quantity * currentHolding.avgCost) + totalCost) / newQuantity;
+
+                        return {
+                            cash: prev.cash - totalCost,
+                            portfolio: { ...prev.portfolio, [selectedSymbol]: { quantity: newQuantity, avgCost: newAvgCost }}
+                        }
+                    });
+
+                } else if (type === 'SELL') {
+                    const holding = wallet.portfolio[selectedSymbol];
+                    if (!holding || holding.quantity < tradeQty) { alert("INSUFFICIENT SHARES"); return; }
+
+                    setWallet(prev => {
+                         const currentHolding = prev.portfolio[selectedSymbol];
+                         const newQuantity = currentHolding.quantity - tradeQty;
+                         const newPortfolio = { ...prev.portfolio };
+                         if (newQuantity === 0) delete newPortfolio[selectedSymbol];
+                         else newPortfolio[selectedSymbol] = { ...currentHolding, quantity: newQuantity };
+
+                         return {
+                             cash: prev.cash + totalCost,
+                             portfolio: newPortfolio
+                         }
+                    });
+                }
+            };
+
+            // --- Portfolio Calculations ---
+            const portfolioValue = Object.entries(wallet.portfolio).reduce((acc, [symbol, data]) => {
+                const currentPrice = stocks.find(s => s.symbol === symbol)?.price || 0;
+                return acc + (data.quantity * currentPrice);
+            }, 0);
+            const totalEquity = wallet.cash + portfolioValue;
+
+            return (
+                <div className="flex-1 flex flex-col bg-terminal-bg font-mono overflow-hidden relative">
+                    {/* SCANLINES OVERLAY */}
+                    <div className="pointer-events-none absolute inset-0 z-50 bg-[url('data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==')] opacity-[0.03] mix-blend-overlay"></div>
+                    
+                    <MarketTicker stocks={stocks} />
+
+                    <div className="flex-1 grid grid-cols-12 gap-px bg-terminal-border p-px overflow-hidden">
+                        
+                        {/* Left Panel: Selector & Chart */}
+                        <div className="col-span-5 bg-terminal-panel flex flex-col">
+                            {/* Stock List header */}
+                            <div className="bg-terminal-bg p-2 border-b border-terminal-border flex justify-between items-center">
+                                <h2 className="text-terminal-blue font-bold flex items-center gap-2"><Icon name="list" size={18}/> MARKET WATCH</h2>
+                            </div>
+                            
+                             {/* Stock List Table */}
+                            <div className="flex-1 overflow-y-auto text-sm">
+                                <table className="w-full text-left">
+                                    <thead className="text-gray-500 sticky top-0 bg-terminal-panel border-b border-terminal-border">
+                                        <tr><th className="p-2">Symbol</th><th className="text-right p-2">Price</th><th className="text-right p-2">Chg %</th></tr>
+                                    </thead>
+                                    <tbody>
+                                    {stocks.map(s => (
+                                        <tr key={s.symbol} 
+                                            onClick={() => setSelectedSymbol(s.symbol)}
+                                            className={`cursor-pointer border-b border-terminal-border hover:bg-terminal-border transition-colors ${selectedSymbol === s.symbol ? 'bg-[#1a1a1a]' : ''}`}>
+                                            <td className="p-2 font-bold text-terminal-blue">{s.symbol}</td>
+                                            <td className={`p-2 text-right font-bold ${s.change >= 0 ? 'text-terminal-green blink-green' : 'text-terminal-red blink-red'}`}>
+                                                {s.price.toFixed(2)}
+                                            </td>
+                                            <td className={`p-2 text-right ${s.change >= 0 ? 'text-terminal-green' : 'text-terminal-red'}`}>
+                                                {s.changePercent.toFixed(2)}%
+                                            </td>
+                                        </tr>
+                                    ))}
+                                    </tbody>
+                                </table>
+                            </div>
+
+                            {/* Chart Section Content */}
+                             <div className="p-4 bg-terminal-panel border-t border-terminal-border h-[300px] flex flex-col">
+                                <div className="flex justify-between items-end mb-2">
+                                    <div>
+                                        <h1 className="text-3xl font-bold text-white">{selectedStock.symbol}</h1>
+                                        <p className="text-xs text-gray-400">{selectedStock.name}</p>
+                                    </div>
+                                    <div className={`text-right ${trendColor === 'green' ? 'text-terminal-green' : 'text-terminal-red'}`}>
+                                        <div className="text-4xl font-bold">{selectedStock.price.toFixed(2)}</div>
+                                        <div className="text-sm">{selectedStock.change >=0 ? '+' : ''}{selectedStock.change.toFixed(2)} ({selectedStock.changePercent.toFixed(2)}%)</div>
+                                    </div>
+                                </div>
+                                <div className="flex-1 border border-terminal-border bg-black relative">
+                                     <TerminalChart data={stockHistory} color={trendColor} />
+                                </div>
+                            </div>
+                        </div>
+
+                        {/* Middle Panel: Order Book */}
+                        <div className="col-span-3 bg-terminal-panel flex flex-col border-x border-terminal-border">
+                             <div className="bg-terminal-bg p-2 border-b border-terminal-border font-bold text-gray-300 flex gap-2 items-center">
+                                 <Icon name="bar-chart-3" size={18} /> MARKET DEPTH
+                             </div>
+                             <div className="flex-1 p-2 overflow-hidden">
+                                <OrderBook currentPrice={selectedStock.price} />
+                             </div>
+                        </div>
+
+                        {/* Right Panel: Trade & Portfolio */}
+                        <div className="col-span-4 bg-terminal-panel flex flex-col">
+                            {/* Trading Form */}
+                            <div className="bg-terminal-bg p-4 border-b border-terminal-border">
+                                <h2 className="text-gray-300 font-bold mb-4 flex items-center gap-2"><Icon name="candlestick-chart" size={18}/> EXECUTE TRADE: <span className="text-terminal-blue">{selectedSymbol}</span></h2>
+                                <div className="space-y-4">
+                                    <div className="flex justify-between text-sm text-gray-400">
+                                        <span>Mkt Price:</span><span className="text-white font-bold">{selectedStock.price.toFixed(2)} ETB</span>
+                                    </div>
+                                     <div className="flex justify-between text-sm text-gray-400 border-b border-terminal-border pb-2 mb-2">
+                                        <span>Est. Total:</span><span className="text-white font-bold">{formatCurrency(selectedStock.price * tradeQty)}</span>
+                                    </div>
+
+                                    <div className="flex items-center bg-terminal-border p-1 border border-terminal-border">
+                                        <span className="text-gray-400 text-xs px-2">QTY:</span>
+                                        <input type="number" min="1" value={tradeQty} onChange={(e) => setTradeQty(parseInt(e.target.value) || 1)}
+                                            className="bg-transparent text-right flex-1 outline-none font-bold text-white p-1"/>
+                                    </div>
+
+                                    <div className="grid grid-cols-2 gap-2">
+                                        <button onClick={() => handleTrade('BUY')} className="bg-terminal-green/80 hover:bg-terminal-green text-black font-bold py-3 text-xl uppercase tracking-wider border-b-4 border-green-700 active:border-0 active:translate-y-1 transition-all">BUY</button>
+                                        <button onClick={() => handleTrade('SELL')} className="bg-terminal-red/80 hover:bg-terminal-red text-black font-bold py-3 text-xl uppercase tracking-wider border-b-4 border-red-800 active:border-0 active:translate-y-1 transition-all">SELL</button>
+                                    </div>
+                                    <div className="text-center text-xs text-gray-500"> Buying Power: {formatCurrency(wallet.cash)}</div>
+                                </div>
+                            </div>
+
+                            {/* Portfolio Summary */}
+                            <div className="flex-1 flex flex-col overflow-hidden">
+                                 <div className="bg-terminal-bg p-2 border-b border-terminal-border flex justify-between items-center">
+                                     <h2 className="text-gray-300 font-bold flex items-center gap-2"><Icon name="briefcase" size={18}/> PORTFOLIO</h2>
+                                     <span className="text-xs text-gray-400">Total Equity: <span className="text-white font-bold">{formatCurrency(totalEquity)}</span></span>
+                                 </div>
+                                 
+                                <div className="flex-1 overflow-y-auto p-2 text-sm">
+                                    {Object.keys(wallet.portfolio).length === 0 ? (
+                                        <div className="text-center text-gray-600 py-8">NO OPEN POSITIONS</div>
+                                    ) : (
+                                        <table className="w-full text-left">
+                                            <thead className="text-gray-500 text-xs border-b border-terminal-border">
+                                                <tr><th>Sym</th><th className="text-right">Qty</th><th className="text-right">Avg Cost</th><th className="text-right">P/L</th></tr>
+                                            </thead>
+                                            <tbody>
+                                            {Object.entries(wallet.portfolio).map(([symbol, data]) => {
+                                                const currentPrice = stocks.find(s => s.symbol === symbol).price;
+                                                const marketValue = data.quantity * currentPrice;
+                                                const totalCost = data.quantity * data.avgCost;
+                                                const pl = marketValue - totalCost;
+                                                const plPercent = (pl / totalCost) * 100;
+
+                                                return (
+                                                    <tr key={symbol} onClick={() => setSelectedSymbol(symbol)} className="cursor-pointer hover:bg-terminal-border border-b border-terminal-border/50">
+                                                        <td className="py-2 text-terminal-blue font-bold">{symbol}</td>
+                                                        <td className="py-2 text-right">{data.quantity}</td>
+                                                        <td className="py-2 text-right text-gray-400">{data.avgCost.toFixed(2)}</td>
+                                                        <td className={`py-2 text-right font-bold ${pl >= 0 ? 'text-terminal-green' : 'text-terminal-red'}`}>
+                                                            <div>{pl > 0 ? '+' : ''}{formatCurrency(pl)}</div>
+                                                            <div className="text-xs opacity-80">{plPercent.toFixed(2)}%</div>
+                                                        </td>
+                                                    </tr>
+                                                );
+                                            })}
+                                            </tbody>
+                                        </table>
+                                    )}
+                                </div>
+                                <div className="bg-terminal-bg p-2 text-xs text-gray-400 border-t border-terminal-border flex justify-between">
+                                    <span>CASH: {formatCurrency(wallet.cash)}</span>
+                                    <span>HOLDINGS: {formatCurrency(portfolioValue)}</span>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            );
+        }
+
+        const root = ReactDOM.createRoot(document.getElementById('root'));
+        root.render(<App />);
+    </script>
+</body>
+</html>
